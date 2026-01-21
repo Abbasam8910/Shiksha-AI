@@ -111,21 +111,29 @@ The app automatically selects configuration based on available resources:
 
 ---
 
-## 📖 Documentation
-
-- [Project Overview](./docs/overview.md) — Architecture, state diagrams, and flows
-
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read our contributing guidelines before submitting a PR.
+**We welcome contributions from the community!** Whether you're fixing bugs, improving documentation, or proposing new features — we'd love your help.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+### How to Contribute
+
+1. **Fork** the repository
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
+3. **Commit** your changes with clear messages (`git commit -m 'Add amazing feature'`)
+4. **Push** to your branch (`git push origin feature/amazing-feature`)
+5. **Open** a Pull Request
+
+### Ways to Contribute
+
+- 🐛 **Report bugs** — Open an issue describing the problem
+- 💡 **Suggest features** — Share your ideas for improvements
+- 📝 **Improve documentation** — Help us make docs clearer
+- 🧪 **Test on your device** — Help us identify device-specific issues
+- 🌐 **Add translations** — Help make the app accessible to more users
+
+> **Note**: For major changes, please open an issue first to discuss what you'd like to change.
 
 ---
 
