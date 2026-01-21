@@ -1,0 +1,51 @@
+name: shiksha_v1
+description: "Mobileshiksha - Offline educational assistant powered by local SLM"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  flutter_markdown: ^0.7.4
+  flutter_math_fork: ^0.7.2  # LaTeX math rendering (offline)
+
+  # State Management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # Local Storage
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  shared_preferences: ^2.1.1
+
+  # LLM Inference (same as working project)
+  llama_cpp_dart: ^0.1.2
+
+  # Utilities
+  dio: ^5.7.0
+  path_provider: ^2.1.3
+  uuid: ^4.4.0
+  ffi: ^2.1.2
+  intl: ^0.19.0
+  permission_handler: ^11.3.1
+  device_info_plus: ^12.3.0
+  battery_plus: ^6.2.2  # Battery level monitoring
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  build_runner: ^2.4.9
+  riverpod_generator: ^2.4.0
+  hive_generator: ^2.0.1
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
