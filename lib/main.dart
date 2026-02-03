@@ -132,6 +132,9 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
     return MaterialApp(
       title: 'Shiksha AI',
       debugShowCheckedModeBanner: false,
+      scrollBehavior: const MaterialScrollBehavior().copyWith(
+        physics: const BouncingScrollPhysics(),
+      ),
       themeMode: themeMode,
       theme: ThemeData(
         scaffoldBackgroundColor: const Color(0xFFF8F9FA), // Off-White
@@ -160,6 +163,12 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
               fontWeight: FontWeight.w600,
             ),
           ),
+        ),
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: {
+            TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          },
         ),
       ),
       darkTheme: ThemeData(

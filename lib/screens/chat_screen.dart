@@ -485,137 +485,164 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     String content,
     bool isUser,
   ) {
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 8),
-        padding: const EdgeInsets.all(16),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.85,
-        ),
-        decoration: BoxDecoration(
-          color: isUser
-              ? Colors.white
-              : const Color(0xFFF3E8FF), // Soft Violet for AI
-          border: isUser ? Border.all(color: Colors.grey[200]!) : null,
-          boxShadow: isUser
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.02),
-                    blurRadius: 2,
-                    offset: const Offset(0, 2),
-                  ),
-                ]
-              : null,
-          borderRadius: BorderRadius.only(
-            topLeft: isUser ? const Radius.circular(20) : Radius.zero,
-            topRight: isUser ? Radius.zero : const Radius.circular(20),
-            bottomLeft: const Radius.circular(20),
-            bottomRight: const Radius.circular(20),
+    if (isUser) {
+      // User Message: Right Aligned, White, Rounded-TR-None
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.85,
           ),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: Colors.grey[100]!),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.zero, // Pointy corner
+              bottomLeft: Radius.circular(16),
+              bottomRight: Radius.circular(16),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 2,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: _buildMessageContent(content, isUser, context),
         ),
-        child: Column(
+      );
+    } else {
+      // AI Message: Row Layout [Avatar + Bubble]
+      final isThinking = content == '...';
+
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!isUser) ...[
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.auto_awesome,
-                    size: 14,
-                    color: Color(0xFF8B7FD6),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    'AI Tutor',
-                    style: GoogleFonts.lexend(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: const Color(0xFF8B7FD6),
-                    ),
-                  ),
-                ],
+            // AI Avatar (Outside Bubble)
+            Container(
+              margin: const EdgeInsets.only(top: 4, right: 12),
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: const Color(0xFF8B7FD6).withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: const Color(0xFF8B7FD6).withValues(alpha: 0.2),
+                ),
               ),
-              const SizedBox(height: 8),
-            ],
-            // ✅ Show bouncing dots for placeholder, otherwise render content
-            _buildMessageContent(content, isUser, context),
+              child: const Icon(
+                Icons.auto_awesome,
+                size: 18,
+                color: Color(0xFF8B7FD6),
+              ),
+            ),
+
+            // AI Bubble
+            Flexible(
+              child: Container(
+                padding: isThinking
+                    ? const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 10,
+                      ) // Small pill padding
+                    : const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 16,
+                      ), // Normal padding
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: isThinking
+                      ? Border.all(color: Colors.grey[200]!)
+                      : Border.all(color: Colors.grey[200]!),
+                  borderRadius: isThinking
+                      ? BorderRadius.circular(999) // Pill shape for thinking
+                      : const BorderRadius.only(
+                          topLeft: Radius.zero, // Pointy corner
+                          topRight: Radius.circular(16),
+                          bottomLeft: Radius.circular(16),
+                          bottomRight: Radius.circular(16),
+                        ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 2,
+                      offset: const Offset(0, 1),
+                    ),
+                  ],
+                ),
+                child: _buildMessageContent(content, isUser, context),
+              ),
+            ),
           ],
         ),
-      ),
-    );
+      );
+    }
   }
 
-  /// Helper to render message content or bouncing dots for placeholder
   Widget _buildMessageContent(
     String content,
     bool isUser,
     BuildContext context,
   ) {
-    // If assistant is showing placeholder, show progressive thinking indicator
     if (!isUser && content == '...') {
       return _ProgressiveThinkingIndicator(
         color: const Color(0xFF8B7FD6),
-        textColor: Theme.of(context).colorScheme.onSurfaceVariant,
+        textColor: const Color(0xFF8B7FD6), // Violet text for thinking
       );
     }
 
-    final scale = ref.watch(fontSizeProvider); // Get scale factor
+    final scale = ref.watch(fontSizeProvider);
     final textColor = isUser
-        ? const Color(0xFF1A1A1A)
-        : const Color(0xFF2D2D2D);
+        ? const Color(0xFF2D2D44) // Ref: text-text-main
+        : const Color(0xFF2D2D44);
 
-    // Otherwise render normal content
     return isUser
         ? Text(
             content,
-            style: GoogleFonts.lexend(
-              fontSize: (16 * scale).toDouble(),
-              fontWeight: FontWeight.w400,
-              height: 1.5,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: (15 * scale).toDouble(), // 15px as per ref
+              fontWeight: FontWeight.w500,
+              height: 1.6, // leading-relaxed
               color: textColor,
             ),
           )
         : MarkdownBody(
             data: content,
             styleSheet: MarkdownStyleSheet(
-              // Lexend font - designed for reading accessibility
-              p: GoogleFonts.lexend(
-                fontSize: (16 * scale).toDouble(),
+              p: GoogleFonts.plusJakartaSans(
+                // Base text
+                fontSize: (15 * scale).toDouble(),
                 fontWeight: FontWeight.w400,
                 height: 1.6,
-                color: textColor,
+                color: const Color(0xFF2D2D44), // Dark grey/black
               ),
-              strong: GoogleFonts.lexend(
+              strong: GoogleFonts.plusJakartaSans(
+                // Bold/Strong text
                 fontWeight: FontWeight.w700,
-                color: const Color(0xFF6A1B9A), // Deep Purple for bold
-                fontSize: (16 * scale).toDouble(), // Added scale for bold
+                color: const Color(0xFF8B7FD6), // Brand Violet
+                fontSize: (15 * scale).toDouble(),
               ),
-              h1: GoogleFonts.lexend(
-                fontSize: (22 * scale).toDouble(),
+              listBullet: GoogleFonts.plusJakartaSans(
+                // List bullets
+                color: const Color(0xFF8B7FD6),
+                fontSize: (15 * scale).toDouble(),
                 fontWeight: FontWeight.bold,
               ),
-              h2: GoogleFonts.lexend(
+              h1: GoogleFonts.plusJakartaSans(
                 fontSize: (20 * scale).toDouble(),
                 fontWeight: FontWeight.bold,
+                color: const Color(0xFF2D2D44),
               ),
-              h3: GoogleFonts.lexend(
+              h2: GoogleFonts.plusJakartaSans(
                 fontSize: (18 * scale).toDouble(),
                 fontWeight: FontWeight.bold,
-              ),
-              listBullet: GoogleFonts.lexend(
-                fontSize: (16 * scale).toDouble(),
-                height: 1.5,
-                color: textColor,
-              ),
-              code: GoogleFonts.jetBrainsMono(
-                fontSize: (13 * scale).toDouble(),
-                backgroundColor: Colors.white,
-              ),
-              codeblockDecoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
+                color: const Color(0xFF2D2D44),
               ),
             ),
           );
@@ -773,8 +800,9 @@ class _ProgressiveThinkingIndicatorState
       children: [
         Text(
           _currentMessage,
-          style: GoogleFonts.lexend(
-            fontSize: 14,
+          style: GoogleFonts.plusJakartaSans(
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
             fontStyle: FontStyle.italic,
             color: widget.textColor,
           ),

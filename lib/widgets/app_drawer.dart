@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/chat_provider.dart';
 import '../models/chat_session.dart';
 import '../screens/settings_screen.dart';
+import '../screens/profile_setup_screen.dart';
 
 class AppDrawer extends ConsumerStatefulWidget {
   const AppDrawer({super.key});
@@ -123,8 +124,10 @@ class _AppDrawerState extends ConsumerState<AppDrawer> {
                   title: Text(
                     'New Chat',
                     style: GoogleFonts.plusJakartaSans(
-                      fontWeight: FontWeight.w600,
-                      color: const Color(0xFF1A1A1A), // Standard dark text
+                      fontSize: 15,
+                      fontWeight: FontWeight
+                          .w500, // Medium matches reference better than w600
+                      color: const Color(0xFF1A1A1A),
                     ),
                   ),
                   onTap: () {
@@ -177,16 +180,24 @@ class _AppDrawerState extends ConsumerState<AppDrawer> {
                   child: InkWell(
                     onTap: () {
                       Navigator.pop(context);
-                      Navigator.pushNamed(context, '/profile_setup');
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              const ProfileSetupScreen(isEditMode: true),
+                        ),
+                      );
                     },
                     child: Row(
                       children: [
                         CircleAvatar(
                           radius: 16,
-                          backgroundColor: const Color(0xFFE5E7EB),
+                          backgroundColor: const Color(
+                            0xFFE3E0F2,
+                          ), // User spec: #e3e0f2
                           child: const Icon(
                             Icons.person,
-                            color: Colors.grey,
+                            color: Color(0xFF8B7FD6), // User spec: #8b7fd6
                             size: 20,
                           ),
                         ),
@@ -213,7 +224,7 @@ class _AppDrawerState extends ConsumerState<AppDrawer> {
                 ),
                 // Settings
                 IconButton(
-                  icon: const Icon(Icons.settings_outlined, color: Colors.grey),
+                  icon: const Icon(Icons.settings, color: Color(0xFF9CA3AF)),
                   onPressed: () {
                     Navigator.pop(context);
                     Navigator.push(
