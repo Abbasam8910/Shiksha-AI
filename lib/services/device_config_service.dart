@@ -28,6 +28,31 @@ class ModelConfig {
     required this.systemPrompt,
   });
 
+  // Utility to create a modified copy of config
+  ModelConfig copyWith({
+    String? tierName,
+    int? contextSize,
+    int? historyLimit,
+    int? maxTokens,
+    int? threads,
+    int? nGpuLayers,
+    int? batchSize,
+    bool? enableSmartContext,
+    String? systemPrompt,
+  }) {
+    return ModelConfig(
+      tierName: tierName ?? this.tierName,
+      contextSize: contextSize ?? this.contextSize,
+      historyLimit: historyLimit ?? this.historyLimit,
+      maxTokens: maxTokens ?? this.maxTokens,
+      threads: threads ?? this.threads,
+      nGpuLayers: nGpuLayers ?? this.nGpuLayers,
+      batchSize: batchSize ?? this.batchSize,
+      enableSmartContext: enableSmartContext ?? this.enableSmartContext,
+      systemPrompt: systemPrompt ?? this.systemPrompt,
+    );
+  }
+
   // 🛡️ TIER 1: Low End (<4GB RAM) - Smart efficiency + LaTeX
   // Default short, expands for detailed requests
   factory ModelConfig.lowSpec() {
@@ -127,6 +152,36 @@ class DeviceProfiler {
       }
 
       // 2. RAM DETECTION
+      final config = await _detectDeviceTier();
+
+      // 3. APPLY DYNAMIC THREAD COUNT
+      final optimalThreads = _getOptimalThreads();
+      return config.copyWith(threads: optimalThreads);
+    } catch (e) {
+      debugPrint('⚠️ Failed to profile device, defaulting to Low Spec: $e');
+      return ModelConfig.lowSpec();
+    }
+  }
+
+  // 🖥️ Dynamic CPU thread detection
+  static int _getOptimalThreads() {
+    try {
+      final cpuCores = Platform.numberOfProcessors;
+      debugPrint('🖥️ CPU cores detected: $cpuCores');
+
+      // Use 75% of available cores, minimum 4, maximum 8
+      final optimalThreads = (cpuCores * 0.75).round().clamp(4, 8);
+      debugPrint('🧵 Using $optimalThreads threads (from $cpuCores cores)');
+      return optimalThreads;
+    } catch (e) {
+      debugPrint('! Failed to detect CPU cores: $e, defaulting to 4 threads');
+      return 4; // Safe fallback
+    }
+  }
+
+  // 📱 Device tier detection based on RAM
+  static Future<ModelConfig> _detectDeviceTier() async {
+    try {
       if (Platform.isAndroid) {
         final androidInfo = await _deviceInfo.androidInfo;
 
@@ -178,32 +233,27 @@ class DeviceProfiler {
           '📱 Device RAM: ${totalRamGb.toStringAsFixed(2)} GB ($totalBytes bytes)',
         );
 
-        // UPDATED THRESHOLDS for real-world device reporting:
-        // - 8GB phones often report ~7.3GB usable
-        // - 6GB phones often report ~5.4GB usable
-        if (totalRamGb >= 7.0) {
+        // LOWERED THRESHOLDS for flagship device detection:
+        // - 8GB phones report ~7.1-7.4GB usable → trigger Performance Mode
+        // - 6GB phones report ~5.4-5.8GB usable → trigger Balanced Mode
+        if (totalRamGb >= 6.5) {
+          debugPrint('✅ Performance Mode activated (≥6.5GB detected)');
           return ModelConfig.highSpec();
         } else if (totalRamGb >= 5.2) {
           return ModelConfig.midSpec();
         } else {
           return ModelConfig.lowSpec();
         }
-      } else if (Platform.isIOS) {
-        // iOS doesn't explicitly expose RAM easily in Flutter without native code.
-        // We use heuristic based on model name in a real app,
-        // but for now default to Mid Spec.
-        return ModelConfig.midSpec();
       }
-    } catch (e) {
-      debugPrint('⚠️ Failed to profile device, defaulting to Low Spec: $e');
-    }
 
-    // Default fallback safety net
-    return ModelConfig.lowSpec();
+      // iOS or other platforms - default to balanced mode
+      return ModelConfig.midSpec();
+    } catch (e) {
+      debugPrint('⚠️ Failed to detect device tier: $e');
+      return ModelConfig.lowSpec();
+    }
   }
 
-  /// Checks if the device has enough free memory to load the model safely.
-  /// Returns false ONLY if we are certain memory is critical.
   /// Checks if the device has enough free memory to load the model safely.
   /// Returns false ONLY if we are certain memory is critical.
   static Future<bool> hasEnoughMemory() async {
