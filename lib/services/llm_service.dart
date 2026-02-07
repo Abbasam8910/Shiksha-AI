@@ -86,7 +86,8 @@ class LLMService {
           contextParams: ContextParams()
             ..nCtx = _config.contextSize
             ..nThreads = _config.threads
-            ..nBatch = 512
+            ..nBatch = _config
+                .batchSize // Dynamic: 512/1024/2048 per tier
             ..nPredict = _config.maxTokens,
           samplingParams: SamplerParams()
             ..temp = 0.7
@@ -254,7 +255,8 @@ class LLMService {
         contextParams: ContextParams()
           ..nCtx = _config.contextSize
           ..nThreads = _config.threads
-          ..nBatch = 512
+          ..nBatch = _config
+              .batchSize // Dynamic: 512/1024/2048 per tier
           ..nPredict = _config.maxTokens,
         samplingParams: SamplerParams()
           ..temp = 0.7

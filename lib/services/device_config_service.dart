@@ -10,7 +10,9 @@ class ModelConfig {
   final int historyLimit; // keepRecentPairs (e.g., 3 vs 10)
   final int maxTokens; // nPredict (e.g., 256 vs 1024)
   final int threads; // nThreads (Usually 4 for all, maybe 6 for ultra-high)
-  final int nGpuLayers; // GPU Acceleration Layers
+  final int
+  nGpuLayers; // GPU Acceleration Layers (Currently 0 - CPU-only binaries)
+  final int batchSize; // nBatch - Prefill batch size for prompt processing
   final bool enableSmartContext; // Use silent injection?
   final String systemPrompt; // Dynamic system prompt per tier
 
@@ -21,6 +23,7 @@ class ModelConfig {
     required this.maxTokens,
     this.threads = 4,
     this.nGpuLayers = 0,
+    this.batchSize = 512,
     this.enableSmartContext = true,
     required this.systemPrompt,
   });
@@ -34,7 +37,8 @@ class ModelConfig {
       historyLimit: 3,
       maxTokens: 256,
       threads: 4,
-      nGpuLayers: 0,
+      nGpuLayers: 0, // CPU-only: No GPU backend compiled in binaries
+      batchSize: 512, // Conservative batch for memory safety
       enableSmartContext: true,
       systemPrompt: '''You are Shiksha, a direct student tutor.
 Task: Answer the user's question immediately.
@@ -57,7 +61,8 @@ Rules:
       historyLimit: 6,
       maxTokens: 384,
       threads: 4,
-      nGpuLayers: 0,
+      nGpuLayers: 0, // CPU-only: No GPU backend compiled in binaries
+      batchSize: 1024, // Higher batch for faster prefill on mid-range CPUs
       enableSmartContext: true,
       systemPrompt: '''You are Shiksha, a friendly student tutor.
 Task: Explain concepts so a 12-year-old can understand.
@@ -81,7 +86,9 @@ Guidelines:
       historyLimit: 10,
       maxTokens: 512,
       threads: 4,
-      nGpuLayers: 50,
+      nGpuLayers:
+          0, // CPU-only: Recompile with Vulkan to enable GPU acceleration
+      batchSize: 2048, // Max batch for flagship CPUs - fastest prefill
       enableSmartContext: true,
       systemPrompt: '''You are Shiksha, a friendly expert tutor.
 Task: Answer questions clearly and concisely.
