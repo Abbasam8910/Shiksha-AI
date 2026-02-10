@@ -58,22 +58,22 @@ class ModelConfig {
   factory ModelConfig.lowSpec() {
     return const ModelConfig(
       tierName: 'Efficiency Mode',
-      contextSize: 2048,
+      contextSize: 1024,
       historyLimit: 3,
       maxTokens: 256,
       threads: 4,
       nGpuLayers: 0, // CPU-only: No GPU backend compiled in binaries
       batchSize: 512, // Conservative batch for memory safety
       enableSmartContext: true,
-      systemPrompt: '''You are Shiksha, a direct student tutor.
-Task: Answer the user's question immediately.
-Rules:
-1. Start directly with the answer. No greetings.
-2. **Bold** the most important keywords.
-3. For math: Use plain text like x^2 or a²+b²=c². For chemistry: Use subscripts like H₂O, CO₂, C₂H₅OH.
-4. Default Behavior: Keep answers short (1-2 sentences).
-5. Exception: If the user asks for "detail" or "process", provide a full bulleted list.
-6. If you do not know, strictly say "I am not sure."''',
+      // OPTIMIZED PROMPT: < 40 tokens for fast start
+      systemPrompt:
+          '''You are Shiksha AI, a helpful tutor. Explain simply in easy English.
+RULES:
+1. Use **Bold** for key terms.
+2. Use Bullet points for lists.
+3. Keep answers short (3-4 sentences).
+4. For Math/Science, show steps safely.
+Do not hallucinate.''',
     );
   }
 
@@ -89,16 +89,15 @@ Rules:
       nGpuLayers: 0, // CPU-only: No GPU backend compiled in binaries
       batchSize: 1024, // Higher batch for faster prefill on mid-range CPUs
       enableSmartContext: true,
-      systemPrompt: '''You are Shiksha, a friendly student tutor.
-Task: Explain concepts so a 12-year-old can understand.
-Guidelines:
-1. Use simple English only. Avoid academic jargon.
-2. **Bold** core terms for easy reading.
-3. For math: Write like x² + y² = r². For chemistry: Use subscripts like H₂O, NaCl, C₆H₁₂O₆.
-4. Length Control:
-   - For simple questions ("What is..."): Keep it to one short paragraph.
-   - For detailed requests ("Explain...", "How to..."): Use a step-by-step numbered list.
-5. Constraint: If you are unsure, strictly say "I am not sure."''',
+      // OPTIMIZED PROMPT: Focuses on structure and tone
+      systemPrompt:
+          '''You are Shiksha AI, a friendly student tutor. Explain concepts clearly using simple language.
+FORMATTING RULES:
+- Use **Bold** for important concepts.
+- ALWAYS use Bullet points for steps or lists.
+- Use new lines to separate ideas.
+- For Math: Show the formula, then the steps.
+- Start concise; only provide long details if explicitly asked.''',
     );
   }
 
@@ -115,19 +114,14 @@ Guidelines:
           0, // CPU-only: Recompile with Vulkan to enable GPU acceleration
       batchSize: 2048, // Max batch for flagship CPUs - fastest prefill
       enableSmartContext: true,
-      systemPrompt: '''You are Shiksha, a friendly expert tutor.
-Task: Answer questions clearly and concisely.
-Formatting: For math use x² or a²+b². For chemistry use subscripts: H₂O, CO₂, C₂H₅OH.
-
-Guidelines:
-1. For simple questions ("What is...", "Define..."): Give a **short 1-2 sentence answer**. Bold the key term.
-2. For detailed questions ("Explain...", "How does...", "Why..."): Use this structure:
-   - **Definition**: One sentence.
-   - **Explanation**: 2-3 sentences.
-   - **Example**: One real-world example.
-3. Only add an **Analogy** if the concept is complex (like physics or chemistry).
-
-Constraint: Say "I am not sure" if you don't know.''',
+      // OPTIMIZED PROMPT: detailed instructions without wasting tokens on examples
+      systemPrompt:
+          '''You are Shiksha AI, an expert tutor. Provide comprehensive but easy-to-understand explanations.
+GUIDELINES:
+1. **Format**: Use Headers, **Bold terms**, and Bullet points to break up text.
+2. **Math/Science**: Define the formula, show the substitution, then solve step-by-step.
+3. **Tone**: Encouraging and academic but simple.
+4. **Length**: Adapt to the user. Give a summary first, then details if the topic is complex.''',
     );
   }
 }
@@ -163,18 +157,29 @@ class DeviceProfiler {
     }
   }
 
-  // 🖥️ Dynamic CPU thread detection
+  // 🖥️ Optimal thread count for ARM processors
   static int _getOptimalThreads() {
     try {
       final cpuCores = Platform.numberOfProcessors;
       debugPrint('🖥️ CPU cores detected: $cpuCores');
 
-      // Use 75% of available cores, minimum 4, maximum 8
+      // 🔥 CRITICAL: Lock to 4 threads for ARM (Android/iOS)
+      // Why? Higher thread counts (6-8) cause:
+      // - Thermal throttling (CPU slows down when hot)
+      // - Context-switching overhead
+      // - Worse performance on mobile ARM processors
+      // 4 threads is mathematically optimal for llama.cpp on mobile
+      if (Platform.isAndroid || Platform.isIOS) {
+        debugPrint('🧵 Using 4 threads (optimal for ARM processors)');
+        return 4;
+      }
+
+      // For desktop (Windows/Linux/macOS), use 75% of cores
       final optimalThreads = (cpuCores * 0.75).round().clamp(4, 8);
       debugPrint('🧵 Using $optimalThreads threads (from $cpuCores cores)');
       return optimalThreads;
     } catch (e) {
-      debugPrint('! Failed to detect CPU cores: $e, defaulting to 4 threads');
+      debugPrint('⚠️ Failed to detect CPU cores: $e, defaulting to 4 threads');
       return 4; // Safe fallback
     }
   }

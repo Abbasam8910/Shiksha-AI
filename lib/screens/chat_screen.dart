@@ -662,7 +662,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, bottom: 24),
             child: Container(
-              height: 56, // 56px height per spec
+              constraints: const BoxConstraints(minHeight: 56, maxHeight: 150),
               decoration: BoxDecoration(
                 color: Colors.white, // White to pop against #F8F9FA bg
                 borderRadius: BorderRadius.circular(
@@ -682,18 +682,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ),
                 ],
               ),
-              padding: const EdgeInsets.only(
-                left: 20,
-                right: 12,
-              ), // 12px right padding per spec
+              padding: const EdgeInsets.fromLTRB(20, 4, 12, 4),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _textController,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) =>
-                          _handleSubmitted(_textController.text),
+                      textInputAction: TextInputAction.newline,
+                      keyboardType: TextInputType.multiline,
                       onChanged: (_) => setState(() {}),
                       decoration: InputDecoration(
                         hintText: 'Ask me anything...',
@@ -703,7 +700,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           fontWeight: FontWeight.w400,
                         ),
                         border: InputBorder.none,
-                        contentPadding: EdgeInsets.zero,
+                        contentPadding: const EdgeInsets.symmetric(
+                          vertical: 14,
+                        ),
                       ),
                       style: GoogleFonts.inter(
                         fontSize: 16,
@@ -711,28 +710,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         color: const Color(0xFF1A1A1A),
                       ),
                       minLines: 1,
-                      maxLines: 1, // Single line for 56px height
+                      maxLines: 5,
                       textCapitalization: TextCapitalization.sentences,
                     ),
                   ),
                   // Send Button - centered vertically
-                  IconButton(
-                    onPressed: isGenerating
-                        ? () => ref
-                              .read(chatProvider.notifier)
-                              .cancelCurrentGeneration()
-                        : _textController.text.trim().isEmpty
-                        ? null
-                        : () => _handleSubmitted(_textController.text),
-                    icon: isGenerating
-                        ? const Icon(
-                            Icons.stop_circle_outlined,
-                            size: 24,
-                            color: Colors.red,
-                          )
-                        : const Icon(Icons.arrow_upward, size: 24),
-                    style: IconButton.styleFrom(
-                      foregroundColor: const Color(0xFF8B7FD6),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 5),
+                    child: IconButton(
+                      onPressed: isGenerating
+                          ? () => ref
+                                .read(chatProvider.notifier)
+                                .cancelCurrentGeneration()
+                          : _textController.text.trim().isEmpty
+                          ? null
+                          : () => _handleSubmitted(_textController.text),
+                      icon: isGenerating
+                          ? const Icon(
+                              Icons.stop_circle_outlined,
+                              size: 24,
+                              color: Colors.red,
+                            )
+                          : const Icon(Icons.arrow_upward, size: 24),
+                      style: IconButton.styleFrom(
+                        foregroundColor: const Color(0xFF8B7FD6),
+                      ),
                     ),
                   ),
                 ],

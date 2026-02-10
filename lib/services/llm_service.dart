@@ -458,11 +458,11 @@ class LLMService {
     final cleanedMsg = lowerMsg.replaceAll(RegExp(r'[^\w\s]'), '').trim();
     final isGreeting = greetings.any((g) => cleanedMsg.startsWith(g));
 
-    // 🔧 OPTIMIZED: Shorter injection saves ~12 tokens per query
+    // 🔧 OPTIMIZED: Helps the model format correctly even on short queries
     if (_config.enableSmartContext && message.length < 20 && !isGreeting) {
-      // Only for very short queries (< 20 chars), use minimal injection
+      // Only for very short queries (< 20 chars), force structure with bullet points
       effectivePrompt =
-          '$message (explain for students)'; // Only 3 extra tokens!
+          '$message (explain simply with bullet points)'; // Forces formatting!
     }
 
     _log('💬 [STREAM] Starting for: "$message" (Hidden: "$effectivePrompt")');
