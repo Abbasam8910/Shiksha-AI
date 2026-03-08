@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/chat_provider.dart';
+import '../providers/download_provider.dart';
 
 import '../providers/ui_provider.dart'; // For Text Size
 import 'profile_setup_screen.dart';
@@ -20,6 +22,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   // Easter egg: 5-tap counter for benchmark screen
   int _tapCount = 0;
   Timer? _tapTimer;
+
+  String _modelSizeDisplay = 'Calculating...';
+
+  @override
+  void initState() {
+    super.initState();
+    _calculateModelSize();
+  }
+
+  Future<void> _calculateModelSize() async {
+    try {
+      final downloadService = ref.read(modelDownloadServiceProvider);
+      final path = await downloadService.getModelPath();
+      final file = File(path);
+      if (await file.exists()) {
+        final sizeBytes = await file.length();
+        final sizeMb = (sizeBytes / (1024 * 1024)).toStringAsFixed(1);
+        if (mounted) {
+          setState(() {
+            _modelSizeDisplay = '${sizeMb}MB Used';
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _modelSizeDisplay = '0MB Used';
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _modelSizeDisplay = 'Unknown Size';
+        });
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -150,7 +189,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          '900MB Used',
+                          _modelSizeDisplay,
                           style: GoogleFonts.inter(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
