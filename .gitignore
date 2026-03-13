@@ -46,3 +46,8 @@ app.*.map.json
 
 # Project documentation (private)
 overview.md
+
+# Report
+
+/thesis_report
+project_details.md
