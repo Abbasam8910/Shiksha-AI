@@ -393,6 +393,8 @@ class BenchmarkService {
       'atoll': 'Snapdragon 750G',
       // Snapdragon 732G / 730G / 730
       'trinket': 'Snapdragon 730G / 732G',
+      // Snapdragon 730G (alternate cpuinfo identifier)
+      'sm7150': 'Snapdragon 730G / 732G',
       // Snapdragon 720G
       'sm6350': 'Snapdragon 720G',
       // Snapdragon 710 / 712
