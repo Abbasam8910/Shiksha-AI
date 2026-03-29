@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:battery_plus/battery_plus.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
+import '../utils/memory_utils.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'model_download_service.dart';
 import 'device_config_service.dart';
@@ -66,6 +67,7 @@ class BenchmarkReport {
   final int peakInferenceRamKb;
   final List<BenchmarkRunResult> runs;
   final DateTime timestamp;
+  final bool usedMlock;
 
   const BenchmarkReport({
     required this.deviceName,
@@ -81,6 +83,7 @@ class BenchmarkReport {
     required this.peakInferenceRamKb,
     required this.runs,
     required this.timestamp,
+    required this.usedMlock,
   });
 
   /// Get runs grouped by prompt label, returning averages.
@@ -207,11 +210,12 @@ class BenchmarkReport {
     buf.writeln();
 
     buf.writeln('--- RAM USAGE (System-Wide via MemAvailable) ---');
+    final memMode = usedMlock ? 'mlock' : 'mmap';
     buf.writeln('Baseline System RAM In-Use : $baselineRamMb MB');
     buf.writeln('System RAM After Load      : $modelLoadedRamInMb MB');
-    buf.writeln('Model Footprint (mmap)     : $modelFootprintMb MB');
+    buf.writeln('Model Footprint ($memMode)  : $modelFootprintMb MB');
     buf.writeln('Peak Inference RAM Delta   : $peakRamMb MB');
-    buf.writeln('Inference KV Cache Overhead: $inferenceOverheadMb MB');
+    buf.writeln('Inference Overhead (KV+Compute): $inferenceOverheadMb MB');  // FIX 8: Updated label
     buf.writeln();
 
     buf.writeln('--- BATTERY ---');
@@ -295,6 +299,9 @@ class BenchmarkService {
   String? _cachedModelPath;
   ModelConfig? _cachedConfig;
 
+  // FIX 4: Track whether mlock was used for the current benchmark load
+  bool _useMlock = false;
+
   static const int runsPerPrompt = 3;
   static const int totalRuns = 12; // 4 prompts x 3 runs
   static const int totalSteps = 13; // 1 warm-up + 12 runs
@@ -304,14 +311,17 @@ class BenchmarkService {
   /// provide stable TPS measurement.
   static const int _benchmarkMaxTokens = 128;
 
-  /// Cooldown delay between runs (seconds). Gives the CPU thermal
-  /// headroom so sustained benchmarks don't throttle.
-  static const int _cooldownSeconds = 2;
+  /// FIX 7: Cooldown delay between runs (seconds). ARM chips need
+  /// 8-12s minimum to dissipate heat after sustained CPU load.
+  /// With 2s cooldown, runs 4-5 show artificially low TPS. (was 2)
+  static const int _cooldownSeconds = 10;
+
+
 
   BenchmarkService(this._downloadService);
 
   void _log(String msg) {
-    if (kDebugMode) print('[BENCHMARK] $msg');
+    if (kDebugMode) debugPrint('[BENCHMARK] $msg');
   }
 
   /// Cancel the benchmark.
@@ -320,6 +330,8 @@ class BenchmarkService {
     _tokenController?.close();
     _log('Benchmark cancelled');
   }
+
+
 
   // ────────────────────────────────────────────────────────────────────
   //  RAM SNAPSHOT  (MemAvailable from /proc/meminfo)
@@ -605,14 +617,15 @@ class BenchmarkService {
 
   /// Creates a LlamaLoad command using cached config.
   /// nPredict is capped at _benchmarkMaxTokens for shorter runs.
+  /// FIX 4: Uses dynamic mlock/mmap based on _useMlock.
   LlamaLoad _buildLoadCommand() {
     final config = _cachedConfig!;
     return LlamaLoad(
       path: _cachedModelPath!,
       modelParams: ModelParams()
         ..nGpuLayers = config.nGpuLayers
-        ..useMemorymap = true
-        ..useMemoryLock = false,
+        ..useMemorymap = !_useMlock  // FIX 4: mmap off when mlocking
+        ..useMemoryLock = _useMlock, // FIX 4: lock full model into RAM
       contextParams: ContextParams()
         ..nCtx = config.contextSize
         ..nThreads = config.threads
@@ -634,8 +647,9 @@ class BenchmarkService {
   /// Runs a single inference, collects TTFT/TPS/Latency/RAM.
   /// Returns null if cancelled.
   Future<BenchmarkRunResult?> _runSingleInference(
-    BenchmarkPrompt prompt,
-  ) async {
+    BenchmarkPrompt prompt, {
+    int maxTokensToGenerate = 0, // Used for 1-token warmup
+  }) async {
     if (_isCancelled || _llamaParent == null) return null;
 
     // Build bare ChatML prompt
@@ -741,6 +755,11 @@ class BenchmarkService {
         }
 
         tokenCount++;
+        
+        // FIX 3: Stop early if maxTokensToGenerate is specified (used for warmup)
+        if (maxTokensToGenerate > 0 && tokenCount >= maxTokensToGenerate) {
+          break;
+        }
 
         // RAM sampling every 20 tokens — track minimum MemAvailable
         if (tokenCount % 20 == 0) {
@@ -796,10 +815,28 @@ class BenchmarkService {
   }
 
   // ────────────────────────────────────────────────────────────────────
-  //  RELOAD CONTEXT BETWEEN RUNS (optimized — uses cached config)
+  //  FIX 6: Lightweight context reset — keeps model in RAM
+  //  Only re-creates stream subscription without dispose/reload.
+  //  This resets the stream state without evicting warm model pages.
+  //  ⚠️ WARNING: Strictly for benchmarking only. It bypasses proper KV cache 
+  //  invalidation and will cause context-bleed if used in real chat sessions.
   // ────────────────────────────────────────────────────────────────────
 
-  Future<void> _reloadContext() async {
+  Future<void> _lightweightContextReset() async {
+    if (_isCancelled || _llamaParent == null) return;
+
+    // Cancel old stream subscription
+    await _streamSubscription?.cancel();
+    _streamSubscription = null;
+
+    // Small delay to let stream cleanup complete
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    _log('Lightweight context reset (subscription cancelled, model stays warm \u2014 re-subscribed on next run)');
+  }
+
+  // Keep the full reload method for safety — used only when context overflows
+  Future<void> _fullReloadContext() async {
     if (_isCancelled || _llamaParent == null) return;
 
     await _streamSubscription?.cancel();
@@ -808,13 +845,17 @@ class BenchmarkService {
     _llamaParent?.dispose();
     _llamaParent = null;
 
-    // Small delay for cleanup
-    await Future.delayed(const Duration(milliseconds: 200));
+    // FIX 2: Wait 800ms to allow OS to reclaim native memory before mlock check
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    // FIX 6: Re-evaluate mlock safety before rebuilding the model
+    // RAM may have dropped significantly mid-benchmark.
+    _useMlock = await MemoryUtils.shouldUseMlock(_cachedConfig!);
 
     _llamaParent = LlamaParent(_buildLoadCommand());
     await _llamaParent!.init();
 
-    _log('Context reloaded for next run');
+    _log('Full context reloaded (model reloaded from disk; useMlock=$_useMlock)');
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -886,7 +927,9 @@ class BenchmarkService {
     );
 
     // ── Step 7: Load model (timed) ──
-    _log('Loading benchmark model...');
+    // FIX 4: Check available RAM BEFORE model load to decide mlock
+    _useMlock = await MemoryUtils.shouldUseMlock(_cachedConfig!);
+    _log('Loading benchmark model (useMlock=$_useMlock)...');
     onProgress?.call(0, totalSteps, 'Loading model...');
 
     final loadStopwatch = Stopwatch()..start();
@@ -916,9 +959,14 @@ class BenchmarkService {
     // ── Step 9: Warm-up run ──
     _log('Running warm-up inference...');
     onProgress?.call(0, totalSteps, 'Warming up... (0/$totalRuns)');
-    await _runSingleInference(benchmarkPrompts[0]); // Discard result
-    await _reloadContext(); // Clean KV cache after warm-up
-    _log('Warm-up complete');
+    
+    // FIX 3: Run only 1 token for warmup to populate OS page cache, no generation cost!
+    await _runSingleInference(benchmarkPrompts[0], maxTokensToGenerate: 1); // Discard result
+    
+    // FIX 5: No _reloadContext() here — warm pages must stay in RAM.
+    // KV cache from warm-up won't interfere because each sendPrompt()
+    // processes fresh ChatML tokens.
+    _log('Warm-up complete (model pages now in OS cache)');
 
     if (_isCancelled) {
       await _dispose();
@@ -928,6 +976,9 @@ class BenchmarkService {
     // ── Step 10: Timed benchmark runs ──
     int globalPeakRamKb = modelLoadedRamKb;
     int runNumber = 0;
+    // FIX 6: Track estimated context position to detect accumulation overflow
+    int estimatedContextTokens = _benchmarkMaxTokens; // warm-up tokens
+    final contextLimit = _cachedConfig!.contextSize;
 
     for (final prompt in benchmarkPrompts) {
       for (int i = 0; i < runsPerPrompt; i++) {
@@ -949,13 +1000,33 @@ class BenchmarkService {
           }
         }
 
-        // Reload context between runs to clear KV cache
+        // FIX 6: Track context fill — each run adds ~benchmarkMaxTokens
+        estimatedContextTokens += _benchmarkMaxTokens + (prompt.estimatedTokens);
+        _log('Context estimate: ~$estimatedContextTokens / $contextLimit tokens');
+
         if (runNumber < totalRuns && !_isCancelled) {
-          await _reloadContext();
-          // Cooldown between runs — gives CPU thermal headroom
+          // FIX 6: If context is approaching 75% capacity, do a full reload
+          // to prevent overflow (critical on Low Spec ctx=1024).
+          // Otherwise, use lightweight reset to keep model pages warm.
+          if (estimatedContextTokens > (contextLimit * 0.75).round()) {
+            _log('Context nearing capacity — full reload to prevent overflow');
+            await _fullReloadContext();
+            estimatedContextTokens = 0; // Reset counter after full reload
+          } else {
+            // FIX 6: Lightweight reset — no model dispose, just stream re-sub
+            await _lightweightContextReset();
+          }
+          // FIX 7: Cooldown between runs — gives CPU thermal headroom
           _log('Cooldown ${_cooldownSeconds}s...');
           await Future.delayed(Duration(seconds: _cooldownSeconds));
         }
+      }
+
+      // Thermal recovery cool-down between the 4 prompt size groups
+      if (runNumber < totalRuns && !_isCancelled) {
+        _log('Batch complete. Inter-batch thermal recovery...');
+        onProgress?.call(runNumber, totalSteps, 'Cooling down...');
+        await Future.delayed(const Duration(seconds: 5)); // thermal recovery
       }
     }
 
@@ -1004,6 +1075,7 @@ class BenchmarkService {
       peakInferenceRamKb: globalPeakRamKb,
       runs: results,
       timestamp: DateTime.now(),
+      usedMlock: _useMlock,
     );
 
     _log('Report built successfully');

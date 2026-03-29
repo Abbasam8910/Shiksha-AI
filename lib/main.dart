@@ -99,8 +99,8 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
         // 🟡 Backgrounded: Cancel active generation but KEEP model in RAM
         // This ensures instant resume when user returns
-        debugPrint('📱 [LIFECYCLE] App paused - Cancelling active generation');
-        llmService.cancelGeneration();
+        debugPrint('📱 [LIFECYCLE] App paused - Checking active generation');
+        llmService.pauseActiveGenerationIfNeeded();
         break;
 
       case AppLifecycleState.inactive:

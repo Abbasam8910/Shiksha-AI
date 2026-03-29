@@ -63,6 +63,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
 
     // Reset LLM context for new chat
     await _llmService.resetContext();
+    _llmService.resetSessionTimer();
 
     // Ensure model is loaded when starting a chat
     if (!_llmService.isLoaded) {
@@ -127,6 +128,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
 
       // Listen to the stream from managed isolate (non-blocking!)
       if (kDebugMode) print('📡 [PROVIDER] Starting stream for: "$content"');
+      _llmService.markSessionStart();
       final stream = _llmService.streamResponse(content);
       _currentInferenceSubscription = stream.listen(
         (token) {
@@ -154,9 +156,11 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           final updatedMessages = List<ChatMessage>.from(state);
           if (updatedMessages.isNotEmpty) {
             // ✅ Apply math formatting for subscripts/superscripts
-            final formattedResponse = MathFormatter.format(
-              fullResponse.isEmpty ? 'No response generated.' : fullResponse,
-            );
+            final String finalContent = fullResponse.isEmpty 
+               ? (_llmService.wasCancelledThisTurn ? '' : 'No response generated.')
+               : fullResponse;
+               
+            final formattedResponse = MathFormatter.format(finalContent);
             updatedMessages.last = ChatMessage(
               role: 'assistant',
               content: formattedResponse,
@@ -170,6 +174,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           _currentInferenceSubscription = null;
 
           // Reset generating state
+          await Future.delayed(_llmService.thermalCooldownDuration);
           _ref.read(isGeneratingProvider.notifier).state = false;
         },
         onError: (e, stackTrace) {

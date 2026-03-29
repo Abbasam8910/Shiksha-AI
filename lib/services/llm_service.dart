@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'model_download_service.dart';
 import 'device_config_service.dart';
+import '../utils/memory_utils.dart';
+
 
 class LLMService {
   final ModelDownloadService _downloadService;
@@ -21,6 +23,8 @@ class LLMService {
 
   StreamController<String>? _currentResponseController;
   bool _isGenerating = false;
+  bool _wasCancelledThisTurn = false;
+  bool get wasCancelledThisTurn => _wasCancelledThisTurn;
 
   // Generation ID system to filter stale tokens (race-condition safe)
   int _currentGenerationId = 0;
@@ -32,12 +36,46 @@ class LLMService {
   // Guard to prevent double-reload race condition
   bool _isReloadingContext = false;
 
+  // FIX 4: Track whether mlock was used for the current model load
+  bool _useMlock = false;
+
+  // FIX 4C: Adaptive Thread Reduction for Long Sessions
+  DateTime? _sessionStartTime;
+
+  void markSessionStart() {
+    _sessionStartTime ??= DateTime.now();
+  }
+
+  void resetSessionTimer() {
+    _sessionStartTime = null;
+  }
+
+  int get _adaptiveThreads {
+    if (_sessionStartTime == null) return _config.threads;
+    final minutes = DateTime.now().difference(_sessionStartTime!).inMinutes;
+    if (minutes < 10) return _config.threads;            // full speed
+    if (minutes < 20) return (_config.threads - 1).clamp(2, 8); // -1 thread
+    return (_config.threads - 2).clamp(2, 8);            // -2 threads
+  }
+
+  // FIX 4A: Post-Response Cooldown
+  Duration get thermalCooldownDuration {
+    switch (_config.tierName) {
+      case 'Performance Mode': return const Duration(seconds: 1);
+      case 'Balanced Mode':    return const Duration(seconds: 2);
+      case 'Efficiency Mode':  return const Duration(seconds: 3);
+      default:                 return const Duration(seconds: 2);
+    }
+  }
+
   LLMService(this._downloadService);
 
   /// Debug-only logging helper (silenced in release builds)
   void _log(String message) {
-    if (kDebugMode) print(message);
+    if (kDebugMode) debugPrint(message);
   }
+
+
 
   bool get isLoaded => _isInitialized;
 
@@ -52,6 +90,9 @@ class LLMService {
       while (_isLoading) {
         await Future.delayed(const Duration(milliseconds: 100));
       }
+      if (!_isInitialized) {
+        throw Exception('Model failed to load in concurrent process.');
+      }
       return;
     }
 
@@ -60,6 +101,7 @@ class LLMService {
     const maxRetries = 3;
 
     while (retryCount < maxRetries) {
+      retryCount++;
       try {
         // 💾 CRITICAL MEMORY CHECK
         if (!await DeviceProfiler.hasEnoughMemory()) {
@@ -68,7 +110,7 @@ class LLMService {
           );
         }
 
-        _log('🔄 Loading model (attempt ${retryCount + 1}/$maxRetries)...');
+        _log('\u{1F504} Loading model (attempt $retryCount/$maxRetries)...');
 
         final modelPath = await _downloadService.getModelPath();
         if (!await File(modelPath).exists()) {
@@ -77,17 +119,20 @@ class LLMService {
 
         _config = await DeviceProfiler.getBestConfig();
 
+        // FIX 4: Check available RAM BEFORE model load to decide mlock
+        _useMlock = await MemoryUtils.shouldUseMlock(_config);
+        _log('\u{1F512} Model load: useMlock=$_useMlock, useMemorymap=${!_useMlock}');
+
         final loadCommand = LlamaLoad(
           path: modelPath,
           modelParams: ModelParams()
             ..nGpuLayers = _config.nGpuLayers
-            ..useMemorymap = true
-            ..useMemoryLock = false,
+            ..useMemorymap = !_useMlock  // FIX 4: mmap off when mlocking
+            ..useMemoryLock = _useMlock, // FIX 4: lock full model into RAM
           contextParams: ContextParams()
             ..nCtx = _config.contextSize
-            ..nThreads = _config.threads
-            ..nBatch = _config
-                .batchSize // Dynamic: 512/1024/2048 per tier
+            ..nThreads = _adaptiveThreads     // Use adaptive, not fixed
+            ..nBatch = _config.batchSize // Dynamic: 256/512/512 per tier (FIX 2)
             ..nPredict = _config.maxTokens,
           samplingParams: SamplerParams()
             ..temp = 0.7
@@ -109,6 +154,7 @@ class LLMService {
         // Init with timeout
         await _llamaParent!.init().timeout(const Duration(seconds: 45));
 
+        // Set up the main stream listener
         _streamSubscription = _llamaParent!.stream.listen(
           _handleToken,
           onError: _handleStreamError,
@@ -117,17 +163,20 @@ class LLMService {
 
         _isInitialized = true;
         _isLoading = false;
-        _log('✅ Model loaded successfully');
+        _log('\u{2705} Model loaded successfully');
+
         return; // Success!
       } on TimeoutException {
-        retryCount++;
-        _log('⏱️ Model init timed out (attempt $retryCount)');
+        _log('\u{23F1}\u{FE0F} Model init timed out (attempt $retryCount)');
         await _cleanupLoad();
-        if (retryCount >= maxRetries) rethrow;
+        if (retryCount >= maxRetries) {
+          _isLoading = false;
+          _isInitialized = false;
+          rethrow;
+        }
         await Future.delayed(Duration(seconds: retryCount * 2));
       } catch (e) {
-        retryCount++;
-        _log('❌ Load failed (attempt $retryCount): $e');
+        _log('\u{274C} Load failed (attempt $retryCount): $e');
         await _cleanupLoad();
         if (retryCount >= maxRetries) {
           _isLoading = false;
@@ -152,7 +201,7 @@ class LLMService {
   }
 
   void _handleStreamError(Object error) {
-    _log('❌ [ISOLATE] Error: $error');
+    _log('\u{274C} [ISOLATE] Error: $error');
     if (_currentResponseController != null &&
         !_currentResponseController!.isClosed) {
       _currentResponseController!.addError(error);
@@ -162,7 +211,7 @@ class LLMService {
   }
 
   void _handleStreamDone() {
-    _log('🏁 [ISOLATE] Stream completed!');
+    _log('\u{1F3C1} [ISOLATE] Stream completed!');
     if (_currentResponseController != null &&
         !_currentResponseController!.isClosed) {
       _currentResponseController!.close();
@@ -171,6 +220,7 @@ class LLMService {
   }
 
   Future<void> _cleanupLoad() async {
+    resetSessionTimer();
     try {
       await _streamSubscription?.cancel();
       _llamaParent?.dispose();
@@ -184,15 +234,23 @@ class LLMService {
   // Flag to abort generation even during context reload
   bool _abortCurrentGeneration = false;
 
+  void pauseActiveGenerationIfNeeded() {
+    if (_isGenerating) {
+      _log('\u{23F8}\u{FE0F} [LIFECYCLE] Pausing active generation...');
+      cancelGeneration();
+    }
+  }
+
   void cancelGeneration() {
     // 🛑 ALLOW cancel even if not "generating" (e.g. during reload)
 
     _log(
-      '🛑 [CANCEL] Canceling current generation (gen $_currentGenerationId)',
+      '\u{1F6D1} [CANCEL] Canceling current generation (gen $_currentGenerationId)',
     );
 
     // ✅ Set flags IMMEDIATELY
     _isGenerating = false;
+    _wasCancelledThisTurn = true;
     _abortCurrentGeneration = true; // Stop any pending reloads/setup
     _needsContextReload = true;
 
@@ -213,7 +271,7 @@ class LLMService {
     }
 
     if (_chatHistory != null) {
-      _log('🔄 [CONTEXT] Resetting chat history...');
+      _log('\u{1F504} [CONTEXT] Resetting chat history...');
       _chatHistory = ChatHistory(keepRecentPairs: _config.historyLimit);
       _chatHistory!.addMessage(
         role: Role.system,
@@ -223,24 +281,32 @@ class LLMService {
       // Force reload for full reset (new chat)
       _needsContextReload = true;
       await reloadLlamaContext();
-      _log('✅ [CONTEXT] Reset complete');
+      _log('\u{2705} [CONTEXT] Reset complete');
     }
   }
 
   Future<void> reloadLlamaContext() async {
-    // 🛡️ RACE CONDITION FIX: Check both flags
-    if (_isReloadingContext || !_needsContextReload) {
-      _log('⚠️ [CONTEXT] Reload skipped (in progress or not needed)');
-      return;
-    }
+    if (_isReloadingContext || !_needsContextReload) return;
     if (_llamaParent == null) return;
 
-    _isReloadingContext = true;
-    _isInitialized =
-        false; // 🛡️ Block streamResponse during isolate recreation
+    _isReloadingContext = true; // ← MUST be here — synchronous, no await before it
 
     try {
-      _log('🔄 [CONTEXT] Reloading LlamaParent to clear KV cache...');
+      // OOM GUARD: If RAM is critically low, wait and retry once before proceeding
+      final availBefore = await MemoryUtils.readMemAvailableMb();
+      if (availBefore < 400) {
+        _log('\u{26A0}\u{FE0F} [CONTEXT] Low RAM (${availBefore}MB) — waiting 3s for OS to reclaim...');
+        await Future.delayed(const Duration(seconds: 3));
+        final availRetry = await MemoryUtils.readMemAvailableMb();
+        if (availRetry < 400) {
+          _log('\u{274C} [CONTEXT] RAM still critical (${availRetry}MB). Aborting reload.');
+          _needsContextReload = true; // keep flag — try again next time
+          return; // finally handles _isReloadingContext = false
+        }
+      }
+
+      _log('\u{1F504} [CONTEXT] Reloading LlamaParent to clear KV cache...');
+      _isInitialized = false; // 🛡️ Block streamResponse during isolate recreation
 
       await _streamSubscription?.cancel();
       _streamSubscription = null;
@@ -248,19 +314,32 @@ class LLMService {
       _llamaParent?.dispose();
       _llamaParent = null;
 
+      // FIX 2: Fixed 800ms isn't enough after mid-generation cancel.
+      // Poll until OS reclaims native memory, max 5 seconds total.
+      await Future.delayed(const Duration(milliseconds: 800));
+      int pollMs = 0;
+      while (pollMs < 4200) {
+        final avail = await MemoryUtils.readMemAvailableMb();
+        if (avail == 0 || avail > MemoryUtils.mlockMinFreeMb + 300) break; // +300MB safety margin
+        await Future.delayed(const Duration(milliseconds: 300));
+        pollMs += 300;
+      }
+
       final modelPath = await _downloadService.getModelPath();
+
+      // FIX 4: Check available RAM BEFORE reload to decide mlock
+      _useMlock = await MemoryUtils.shouldUseMlock(_config);
 
       final loadCommand = LlamaLoad(
         path: modelPath,
         modelParams: ModelParams()
           ..nGpuLayers = _config.nGpuLayers
-          ..useMemorymap = true
-          ..useMemoryLock = false,
+          ..useMemorymap = !_useMlock  // FIX 4: mmap off when mlocking
+          ..useMemoryLock = _useMlock, // FIX 4: lock full model into RAM
         contextParams: ContextParams()
           ..nCtx = _config.contextSize
-          ..nThreads = _config.threads
-          ..nBatch = _config
-              .batchSize // Dynamic: 512/1024/2048 per tier
+          ..nThreads = _adaptiveThreads     // Use adaptive, not fixed
+          ..nBatch = _config.batchSize // Dynamic: 256/512/512 per tier (FIX 2)
           ..nPredict = _config.maxTokens,
         samplingParams: SamplerParams()
           ..temp = 0.7
@@ -273,6 +352,7 @@ class LLMService {
       _llamaParent = LlamaParent(loadCommand);
       await _llamaParent!.init();
 
+      // Set up the main stream listener
       _streamSubscription = _llamaParent!.stream.listen(
         (token) {
           if (_needsContextReload) return;
@@ -286,7 +366,7 @@ class LLMService {
           }
         },
         onError: (error) {
-          _log('❌ [ISOLATE] Error: $error');
+          _log('\u{274C} [ISOLATE] Error: $error');
           if (_currentResponseController != null &&
               !_currentResponseController!.isClosed) {
             _currentResponseController!.addError(error);
@@ -295,7 +375,7 @@ class LLMService {
           _isGenerating = false;
         },
         onDone: () {
-          _log('🏁 [ISOLATE] Stream completed!');
+          _log('\u{1F3C1} [ISOLATE] Stream completed!');
           if (_currentResponseController != null &&
               !_currentResponseController!.isClosed) {
             _currentResponseController!.close();
@@ -306,9 +386,9 @@ class LLMService {
 
       _isInitialized = true; // ✅ Isolate ready, allow streamResponse
       _needsContextReload = false;
-      _log('✅ [CONTEXT] LlamaParent reloaded, KV cache cleared');
+      _log('\u{2705} [CONTEXT] LlamaParent reloaded, KV cache cleared');
     } catch (e) {
-      _log('❌ [CONTEXT] Reload failed: $e');
+      _log('\u{274C} [CONTEXT] Reload failed: $e');
       _isInitialized = false; // Keep blocked on failure
       rethrow;
     } finally {
@@ -318,7 +398,7 @@ class LLMService {
 
   void removeLastUserAndAssistantMessage() {
     if (_chatHistory != null && _chatHistory!.messages.isNotEmpty) {
-      _log('🗑️ [CONTEXT] Removing last user message from history');
+      _log('\u{1F5D1}\u{FE0F} [CONTEXT] Removing last user message from history');
 
       // 🛡️ FIXED: First, remove all trailing empty/incomplete messages
       while (_chatHistory!.messages.isNotEmpty &&
@@ -328,7 +408,7 @@ class LLMService {
                 '_(Response stopped',
               ))) {
         _chatHistory!.messages.removeLast();
-        _log('🗑️ [CONTEXT] Removed orphaned/empty message');
+        _log('\u{1F5D1}\u{FE0F} [CONTEXT] Removed orphaned/empty message');
       }
 
       final newHistory = ChatHistory(keepRecentPairs: _config.historyLimit);
@@ -355,7 +435,7 @@ class LLMService {
       }
       _chatHistory = newHistory;
       _log(
-        '✅ [CONTEXT] History cleaned, ${_chatHistory!.messages.length} messages remaining',
+        '\u{2705} [CONTEXT] History cleaned, ${_chatHistory!.messages.length} messages remaining',
       );
     }
   }
@@ -364,7 +444,7 @@ class LLMService {
     if (_chatHistory != null && _chatHistory!.messages.isNotEmpty) {
       final lastMsg = _chatHistory!.messages.last;
       if (lastMsg.role == Role.assistant) {
-        _log('🗑️ [CONTEXT] Removing last assistant message from history');
+        _log('\u{1F5D1}\u{FE0F} [CONTEXT] Removing last assistant message from history');
         final newHistory = ChatHistory(keepRecentPairs: _config.historyLimit);
         for (var i = 0; i < _chatHistory!.messages.length - 1; i++) {
           final msg = _chatHistory!.messages[i];
@@ -380,35 +460,35 @@ class LLMService {
     final myGenerationId = _currentGenerationId;
 
     _log(
-      '🚀 [ENTRY] streamResponse called with: "$message" (gen $myGenerationId)',
+      '\u{1F680} [ENTRY] streamResponse called with: "$message" (gen $myGenerationId)',
     );
     _log(
-      '🔍 [STATE] _isInitialized: $_isInitialized, _isGenerating: $_isGenerating, _isReloadingContext: $_isReloadingContext',
+      '\u{1F50D} [STATE] _isInitialized: $_isInitialized, _isGenerating: $_isGenerating, _isReloadingContext: $_isReloadingContext',
     );
 
     // 🛡️ RACE CONDITION FIX: Wait for any in-progress context reload to finish
     // This prevents "No child isolate found" crash when user sends a message
     // immediately after clicking "New Chat" while the isolate is being recreated.
     if (_isReloadingContext) {
-      _log('⏳ [STREAM] Waiting for context reload to finish...');
+      _log('\u{23F3} [STREAM] Waiting for context reload to finish...');
       int reloadWait = 0;
       while (_isReloadingContext) {
         await Future.delayed(const Duration(milliseconds: 100));
         reloadWait++;
         if (reloadWait > 100) {
           // 10 second max wait
-          _log('❌ [STREAM] Context reload timed out after 10s');
+          _log('\u{274C} [STREAM] Context reload timed out after 10s');
           throw Exception('Model is restarting. Please try again in a moment.');
         }
       }
-      _log('✅ [STREAM] Context reload finished, proceeding...');
+      _log('\u{2705} [STREAM] Context reload finished, proceeding...');
     }
 
     if (!_isInitialized ||
         _llamaParent == null ||
         _chatHistory == null ||
         _chatFormat == null) {
-      _log('❌ [ERROR] Model not loaded!');
+      _log('\u{274C} [ERROR] Model not loaded!');
       throw Exception('Model not loaded.');
     }
 
@@ -431,10 +511,10 @@ class LLMService {
     while (_isGenerating) {
       if (_abortCurrentGeneration) break; // Break if this request was aborted
       waitCount++;
-      _log('⏳ [$waitCount] Waiting for previous generation...');
+      _log('\u{23F3} [$waitCount] Waiting for previous generation...');
       await Future.delayed(const Duration(milliseconds: 100));
       if (waitCount > 30) {
-        _log('⚠️ [TIMEOUT] Force canceling previous generation');
+        _log('\u{26A0}\u{FE0F} [TIMEOUT] Force canceling previous generation');
         cancelGeneration();
         await Future.delayed(const Duration(milliseconds: 100));
         break;
@@ -443,7 +523,7 @@ class LLMService {
 
     // Check if we were cancelled while waiting
     if (_abortCurrentGeneration) {
-      _log('🛑 [STREAM] Aborted before starting');
+      _log('\u{1F6D1} [STREAM] Aborted before starting');
       return;
     }
 
@@ -451,19 +531,20 @@ class LLMService {
     // The old "skip for quick follow-ups" logic caused a bug where cancelled
     // generation tokens leaked into the next question's response!
     if (_needsContextReload) {
-      _log('⚠️ [CONTEXT] Reload required after previous cancellation');
+      _log('\u{26A0}\u{FE0F} [CONTEXT] Reload required after previous cancellation');
       await reloadLlamaContext();
     }
 
     // Check AGAIN after reload (user might have clicked stop during reload)
     if (_abortCurrentGeneration) {
-      _log('🛑 [STREAM] Aborted during context reload');
+      _log('\u{1F6D1} [STREAM] Aborted during context reload');
       return;
     }
 
     _activeGenerationId = myGenerationId;
     // Set running flag (will be checked again below)
     _isGenerating = true;
+    _wasCancelledThisTurn = false;
 
     // 1. SILENT CONTEXT INJECTION
     String effectivePrompt = message;
@@ -489,12 +570,12 @@ class LLMService {
           '$message (explain simply with bullet points)'; // Forces formatting!
     }
 
-    _log('💬 [STREAM] Starting for: "$message" (Hidden: "$effectivePrompt")');
+    _log('\u{1F4AC} [STREAM] Starting for: "$message" (Hidden: "$effectivePrompt")');
 
     _chatHistory!.addMessage(role: Role.user, content: message);
     _pruneHistoryIfNeeded();
     _log(
-      '📜 [CONTEXT] History: ${_chatHistory!.messages.length} msgs (Pruning: ${_config.historyLimit} pairs)',
+      '\u{1F4DC} [CONTEXT] History: ${_chatHistory!.messages.length} msgs (Pruning: ${_config.historyLimit} pairs)',
     );
 
     // Build prompt manually
@@ -506,7 +587,7 @@ class LLMService {
 
       // SAFETY CHECK: Skip empty messages
       if (msg.content.trim().isEmpty) {
-        _log('⚠️ [PROMPT] Skipping empty ${msg.role.name} message at index $i');
+        _log('\u{26A0}\u{FE0F} [PROMPT] Skipping empty ${msg.role.name} message at index $i');
         continue;
       }
 
@@ -519,7 +600,7 @@ class LLMService {
     formattedPrompt += '<|im_start|>user\n$effectivePrompt\n<|im_end|>\n';
     formattedPrompt += '<|im_start|>assistant\n';
 
-    _log('🔍 PROMPT:');
+    _log('\u{1F50D} PROMPT:');
     _log(formattedPrompt);
     _log('---END---');
 
@@ -527,19 +608,19 @@ class LLMService {
       await _currentResponseController!.close();
     }
 
-    _log('🔄 [STREAM] New controller...');
+    _log('\u{1F504} [STREAM] New controller...');
     _currentResponseController = StreamController<String>();
 
     await Future.delayed(const Duration(milliseconds: 50));
 
     // CHECK ABORT one last time before committing to isolate
     if (_abortCurrentGeneration) {
-      _log('🛑 [STREAM] Aborted prompt sending');
+      _log('\u{1F6D1} [STREAM] Aborted prompt sending');
       _currentResponseController?.close();
       return;
     }
 
-    _log('📤 [STREAM] Sending to isolate...');
+    _log('\u{1F4E4} [STREAM] Sending to isolate...');
     _llamaParent!.sendPrompt(formattedPrompt);
 
     String fullResponse = '';
@@ -578,7 +659,7 @@ class LLMService {
             ? "Initial 45s"
             : (isShort ? "Smart 1.5s" : "Dynamic ${duration.inSeconds}s");
         _log(
-          '⏱️ [TIMEOUT] $timeoutType triggered (${fullResponse.length} chars)',
+          '\u{23F1}\u{FE0F} [TIMEOUT] $timeoutType triggered (${fullResponse.length} chars)',
         );
         // Only reload context if model completely failed to start (45s with no tokens).
         // Dynamic/Smart timeouts are NORMAL completion (model stopped → timer fires).
@@ -599,7 +680,7 @@ class LLMService {
         // ✅ CRITICAL: Check if cancelled at START of each iteration
         // This allows immediate exit when user clicks stop
         if (!_isGenerating || _activeGenerationId != myGenerationId) {
-          _log('🛑 [STREAM] Cancelled detected - breaking immediately!');
+          _log('\u{1F6D1} [STREAM] Cancelled detected - breaking immediately!');
           timeoutTimer?.cancel();
           break;
         }
@@ -611,7 +692,7 @@ class LLMService {
               .difference(startTime)
               .inMilliseconds;
           _log(
-            '🎯 [STREAM] First token in ${firstTokenMs}ms! Now using 2s base timeout.',
+            '\u{1F3AF} [STREAM] First token in ${firstTokenMs}ms! Now using 2s base timeout.',
           );
           // DON'T call resetTimeout here - let the sentence detection below handle it
           // This prevents premature timeouts on early tokens
@@ -642,7 +723,7 @@ class LLMService {
             fullResponse += cleanToken;
             yield cleanToken;
           }
-          _log('🏁 [STREAM] EOS detected - closing stream immediately!');
+          _log('\u{1F3C1} [STREAM] EOS detected - closing stream immediately!');
 
           // ✅ CRITICAL: Cancel timer BEFORE break to prevent delayed state reset
           timeoutTimer?.cancel();
@@ -678,7 +759,7 @@ class LLMService {
         resetTimeout(isShort: isSentenceEnd);
       }
     } catch (e) {
-      _log('❌ [STREAM] Error: $e');
+      _log('\u{274C} [STREAM] Error: $e');
       _needsContextReload = true; // Error = corrupted state, must reload
       // User-friendly error mapping
       if (e is TimeoutException) {
@@ -697,30 +778,34 @@ class LLMService {
       timeoutTimer?.cancel();
       _isGenerating = false;
 
-      // Log total response time and preview
-      final totalMs = DateTime.now().difference(startTime).inMilliseconds;
-      _log(
-        '✅ [STREAM] Complete in ${totalMs}ms (${fullResponse.length} chars)',
-      );
+      if (_wasCancelledThisTurn) {
+        _log('\u{26A0}\u{FE0F} [STREAM] Cancelled – skipping history save');
+      } else {
+        // Log total response time and preview
+        final totalMs = DateTime.now().difference(startTime).inMilliseconds;
+        _log(
+          '\u{2705} [STREAM] Complete in ${totalMs}ms (${fullResponse.length} chars)',
+        );
 
-      // ✅ ADD: Log response preview for debugging
-      final preview = fullResponse.length > 100
-          ? '${fullResponse.substring(0, 100)}...'
-          : fullResponse;
-      _log('📝 [RESPONSE] "$preview"');
+        // ✅ ADD: Log response preview for debugging
+        final preview = fullResponse.length > 100
+            ? '${fullResponse.substring(0, 100)}...'
+            : fullResponse;
+        _log('\u{1F4DD} [RESPONSE] "$preview"');
 
-      // Save the clean response to history
-      final eosEndClean =
-          '<'
-          '|im_end|'
-          '>';
-      // 🛡️ OOM PROTECTION: Truncate very long responses
-      final maxLength = _config.maxTokens * 4; // ~4 chars per token estimate
-      final cleanResponse = fullResponse.replaceAll(eosEndClean, '').trim();
-      final safeResponse = cleanResponse.length > maxLength
-          ? '${cleanResponse.substring(0, maxLength)}...'
-          : cleanResponse;
-      _chatHistory!.addMessage(role: Role.assistant, content: safeResponse);
+        // Save the clean response to history
+        final eosEndClean =
+            '<'
+            '|im_end|'
+            '>';
+        // 🛡️ OOM PROTECTION: Truncate very long responses
+        final maxLength = _config.maxTokens * 4; // ~4 chars per token estimate
+        final cleanResponse = fullResponse.replaceAll(eosEndClean, '').trim();
+        final safeResponse = cleanResponse.length > maxLength
+            ? '${cleanResponse.substring(0, maxLength)}...'
+            : cleanResponse;
+        _chatHistory!.addMessage(role: Role.assistant, content: safeResponse);
+      }
     }
   }
 
@@ -728,7 +813,7 @@ class LLMService {
   Future<void> unloadModel() async {
     if (!_isInitialized) return;
 
-    _log('🧹 [LIFECYCLE] Unloading model to free resources...');
+    _log('\u{1F9F9} [LIFECYCLE] Unloading model to free resources...');
 
     // Stop currently generation if any
     cancelGeneration();
@@ -748,7 +833,8 @@ class LLMService {
     _needsContextReload = false;
     _isReloadingContext = false;
 
-    _log('✅ [LIFECYCLE] Model unloaded successfully');
+    resetSessionTimer();
+    _log('\u{2705} [LIFECYCLE] Model unloaded successfully');
   }
 
   // 🛡️ MEMORY MANAGEMENT: Prevent history from growing too large
@@ -774,7 +860,7 @@ class LLMService {
         _chatHistory!.addMessage(role: msg.role, content: msg.content);
       }
 
-      _log('🧹 [MEMORY] Pruned chat history to $maxMessages messages');
+      _log('\u{1F9F9} [MEMORY] Pruned chat history to $maxMessages messages');
     }
   }
 }

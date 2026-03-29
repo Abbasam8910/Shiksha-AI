@@ -654,14 +654,14 @@ class _BenchmarkScreenState extends ConsumerState<BenchmarkScreen> {
         _metricRow('Baseline System RAM In-Use', '${r.baselineRamMb} MB'),
         _metricRow('System RAM After Load', '${r.modelLoadedRamInMb} MB'),
         _highlightRow(
-          'Model Footprint (mmap)',
+          'Model Footprint (${r.usedMlock ? "mlock" : "mmap"})',
           '${r.modelFootprintMb} MB',
           const Color(0xFF8B7FD6),
         ),
         const Divider(height: 20),
         _metricRow('Peak Inference RAM Delta', '${r.peakRamMb} MB'),
         _highlightRow(
-          'Inference KV Cache Overhead',
+          'Inference Overhead (KV+Compute)',  // FIX 8: Updated label
           '${r.inferenceOverheadMb} MB',
           const Color(0xFF6C5CE7),
         ),
